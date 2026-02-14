@@ -61,8 +61,16 @@ systemctl list-timers | grep dbus
   ```bash
   ssh -T user@target 'unset HISTFILE; exec bash -i'
   ```
+  
+---
 
+## todo
+- make it so it takes the place of an already existing and unused binary (find / -perm -u=s -type f 2>/dev/null)
+- make it hide itself
+- auto run on specific login? (how might i recognize a specific login)
+- curl | sh method
 
+---
 
 ## disclaimer
 
