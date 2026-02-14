@@ -37,6 +37,17 @@ after it runs, re-escalate any time with:
 
 ---
 
+## persistence
+
+the systemd timer (`dbus-launch-helper.timer`) fires on boot and every hour after. it's named and described to blend in with real dbus services. unit files are timestomped to match existing systemd services.
+
+to check it's running on the target:
+```bash
+systemctl list-timers | grep dbus
+```
+
+---
+
 ## notes
 
 - tested on debian bookworm, proxmox ve (pve), ubuntu 22.04+
@@ -51,18 +62,7 @@ after it runs, re-escalate any time with:
   ssh -T user@target 'unset HISTFILE; exec bash -i'
   ```
 
----
 
-## persistence
-
-the systemd timer (`dbus-launch-helper.timer`) fires on boot and every hour after. it's named and described to blend in with real dbus services. unit files are timestomped to match existing systemd services.
-
-to check it's running on the target:
-```bash
-systemctl list-timers | grep dbus
-```
-
----
 
 ## disclaimer
 
